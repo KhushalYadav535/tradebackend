@@ -9,6 +9,7 @@ const positionsRoutes = require('./routes/positions');
 const ledgerRoutes = require('./routes/ledger');
 const usersRoutes = require('./routes/users');
 const adminRoutes = require('./routes/admin');
+const watchlistRoutes = require('./routes/watchlist');
 
 const app = express();
 
@@ -29,6 +30,7 @@ app.use('/api/positions', positionsRoutes);
 app.use('/api/ledger', ledgerRoutes);
 app.use('/api/users', usersRoutes);
 app.use('/api/admin', adminRoutes);
+app.use('/api/watchlist', watchlistRoutes);
 
 app.use((req, res) => {
   res.status(404).json({ error: 'Not found' });

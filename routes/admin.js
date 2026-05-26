@@ -22,16 +22,20 @@ router.get('/trade-logs', ctrl.getTradeLogs);
 
 // Indices Master routes
 router.get('/indices', ctrl.listIndices);
+router.post('/indices', ctrl.createIndex);
 router.patch('/indices/:id', (req, res) => {
   req.body.id = Number(req.params.id);
   ctrl.updateIndices(req, res);
 });
+router.delete('/indices/:id', ctrl.deleteIndex);
 
 // Script Master routes
 router.get('/script-master', ctrl.listScriptMaster);
+router.post('/script-master', ctrl.createScript);
 router.patch('/script-master/:id', (req, res) => {
   req.body.id = Number(req.params.id);
   ctrl.updateScriptActive(req, res);
 });
+router.delete('/script-master/:id', ctrl.deleteScript);
 
 module.exports = router;

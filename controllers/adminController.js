@@ -381,6 +381,43 @@ exports.updateIndices = async (req, res) => {
   }
 };
 
+exports.createIndex = async (req, res) => {
+  const { name, display_name } = req.body || {};
+  if (!name || !display_name) {
+    return res.status(400).json({ error: 'name and display_name are required' });
+  }
+  const cleanName = String(name).toUpperCase().trim();
+  if (!/^[A-Z0-9_-]{1,30}$/.test(cleanName)) {
+    return res.status(400).json({ error: 'Name must be uppercase letters/digits only (max 30 chars)' });
+  }
+  try {
+    const { rows } = await db.query(`
+      INSERT INTO indices (name, display_name, is_active)
+      VALUES ($1, $2, true)
+      RETURNING id, name, display_name, is_active, created_at
+    `, [cleanName, String(display_name).trim()]);
+    res.json({ index: rows[0] });
+  } catch (err) {
+    if (err.code === '23505') {
+      return res.status(409).json({ error: `Index "${cleanName}" already exists` });
+    }
+    console.error('admin.createIndex', err);
+    res.status(500).json({ error: 'Failed to create index' });
+  }
+};
+
+exports.deleteIndex = async (req, res) => {
+  const id = Number(req.params.id);
+  try {
+    const { rowCount } = await db.query(`DELETE FROM indices WHERE id = $1`, [id]);
+    if (!rowCount) return res.status(404).json({ error: 'Index not found' });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('admin.deleteIndex', err);
+    res.status(500).json({ error: 'Failed to delete index' });
+  }
+};
+
 // Script Master
 exports.listScriptMaster = async (req, res) => {
   try {

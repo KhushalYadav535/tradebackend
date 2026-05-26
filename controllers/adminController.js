@@ -455,3 +455,58 @@ exports.updateScriptActive = async (req, res) => {
     res.status(500).json({ error: 'Failed to update script' });
   }
 };
+
+exports.createScript = async (req, res) => {
+  const { name, exchange, expiry, lot_size, max_lots, margin_per_lot, current_price } = req.body || {};
+
+  if (!name || !exchange) {
+    return res.status(400).json({ error: 'name and exchange are required' });
+  }
+  const cleanName = String(name).toUpperCase().trim();
+  const cleanExchange = String(exchange).toUpperCase().trim();
+
+  if (!/^[A-Z0-9_&.-]{1,50}$/.test(cleanName)) {
+    return res.status(400).json({ error: 'Script name must be letters/digits only (max 50 chars)' });
+  }
+
+  try {
+    const { rows } = await db.query(`
+      INSERT INTO scripts 
+        (name, exchange, expiry, lot_size, max_lots, margin_per_lot, current_price, prev_close, is_active, is_banned)
+      VALUES 
+        ($1, $2, $3, $4, $5, $6, $7, $7, true, false)
+      RETURNING id, name, exchange, expiry, lot_size, max_lots, margin_per_lot, current_price, is_active, is_banned, created_at
+    `, [
+      cleanName,
+      cleanExchange,
+      expiry || null,
+      Number(lot_size) > 0 ? Number(lot_size) : 1,
+      Number(max_lots) > 0 ? Number(max_lots) : 100,
+      Number(margin_per_lot) > 0 ? Number(margin_per_lot) : null,
+      Number(current_price) > 0 ? Number(current_price) : 0,
+    ]);
+    res.json({ script: rows[0] });
+  } catch (err) {
+    if (err.code === '23505') {
+      return res.status(409).json({ error: `Script "${cleanName}" already exists in ${cleanExchange}` });
+    }
+    console.error('admin.createScript', err);
+    res.status(500).json({ error: 'Failed to create script' });
+  }
+};
+
+exports.deleteScript = async (req, res) => {
+  const id = Number(req.params.id);
+  try {
+    const { rowCount } = await db.query(`DELETE FROM scripts WHERE id = $1`, [id]);
+    if (!rowCount) return res.status(404).json({ error: 'Script not found' });
+    res.json({ ok: true });
+  } catch (err) {
+    if (err.code === '23503') {
+      return res.status(409).json({ error: 'Cannot delete — this script has existing trades or positions' });
+    }
+    console.error('admin.deleteScript', err);
+    res.status(500).json({ error: 'Failed to delete script' });
+  }
+};
+

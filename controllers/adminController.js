@@ -31,10 +31,9 @@ exports.stats = async (req, res) => {
 exports.listStudents = async (req, res) => {
   try {
     const { rows } = await db.query(
-      `SELECT u.id, u.username, u.full_name, u.balance, u.exposure, u.is_active, u.created_at,
+      `SELECT u.id, u.username, u.full_name, u.balance, u.exposure, u.is_active, u.role, u.created_at,
               (SELECT COUNT(*) FROM trades t WHERE t.user_id = u.id AND t.status='EXECUTED')::int AS trade_count
        FROM users u
-       WHERE u.role = 'user'
        ORDER BY u.created_at DESC`
     );
     res.json({ students: rows });
@@ -83,9 +82,9 @@ exports.createStudent = async (req, res) => {
 
 exports.updateStudent = async (req, res) => {
   const id = Number(req.params.id);
-  const { full_name, balance, is_active, password } = req.body || {};
+  const { full_name, balance, is_active, password, role } = req.body || {};
   try {
-    const cur = await db.query(`SELECT * FROM users WHERE id=$1 AND role='user'`, [id]);
+    const cur = await db.query(`SELECT * FROM users WHERE id=$1`, [id]);
     if (!cur.rows.length) return res.status(404).json({ error: 'Student not found' });
 
     const sets = [];
@@ -94,6 +93,7 @@ exports.updateStudent = async (req, res) => {
 
     if (typeof full_name === 'string') { sets.push(`full_name=$${i++}`); vals.push(full_name); }
     if (typeof is_active === 'boolean') { sets.push(`is_active=$${i++}`); vals.push(is_active); }
+    if (typeof role === 'string' && ['user', 'admin'].includes(role)) { sets.push(`role=$${i++}`); vals.push(role); }
     if (balance !== undefined && balance !== null && !Number.isNaN(Number(balance))) {
       sets.push(`balance=$${i++}`); vals.push(Number(balance));
     }
@@ -131,7 +131,7 @@ exports.updateStudent = async (req, res) => {
 exports.deleteStudent = async (req, res) => {
   const id = Number(req.params.id);
   try {
-    const { rowCount } = await db.query(`DELETE FROM users WHERE id=$1 AND role='user'`, [id]);
+    const { rowCount } = await db.query(`DELETE FROM users WHERE id=$1`, [id]);
     if (!rowCount) return res.status(404).json({ error: 'Student not found' });
     res.json({ ok: true });
   } catch (err) {
@@ -157,5 +157,188 @@ exports.studentTrades = async (req, res) => {
   } catch (err) {
     console.error('admin.studentTrades', err);
     res.status(500).json({ error: 'Failed to load trades' });
+  }
+};
+
+exports.getAllTrades = async (req, res) => {
+  try {
+    const { rows } = await db.query(`
+      SELECT t.id, t.trade_type, t.quantity, t.price, t.total_value, t.status, t.reject_reason, t.created_at,
+             s.name AS script, s.exchange,
+             u.username, u.full_name
+      FROM trades t
+      JOIN scripts s ON s.id = t.script_id
+      JOIN users u ON u.id = t.user_id
+      ORDER BY t.created_at DESC
+      LIMIT 500
+    `);
+    res.json({ trades: rows });
+  } catch (err) {
+    console.error('admin.getAllTrades', err);
+    res.status(500).json({ error: 'Failed to load trades' });
+  }
+};
+
+exports.getRejections = async (req, res) => {
+  try {
+    const { rows } = await db.query(`
+      SELECT t.id, t.trade_type, t.quantity, t.price, t.total_value, t.status, t.reject_reason, t.created_at,
+             s.name AS script, s.exchange,
+             u.username, u.full_name
+      FROM trades t
+      JOIN scripts s ON s.id = t.script_id
+      JOIN users u ON u.id = t.user_id
+      WHERE t.status = 'REJECTED'
+      ORDER BY t.created_at DESC
+      LIMIT 200
+    `);
+    res.json({ rejections: rows });
+  } catch (err) {
+    console.error('admin.getRejections', err);
+    res.status(500).json({ error: 'Failed to load rejections' });
+  }
+};
+
+exports.getSettings = async (req, res) => {
+  try {
+    const { rows } = await db.query(`SELECT key, value FROM settings`);
+    const settings = {};
+    rows.forEach(r => { settings[r.key] = r.value; });
+    res.json({ settings });
+  } catch (err) {
+    console.error('admin.getSettings', err);
+    res.status(500).json({ error: 'Failed to load settings' });
+  }
+};
+
+exports.updateSettings = async (req, res) => {
+  const settings = req.body;
+  if (!settings || typeof settings !== 'object') {
+    return res.status(400).json({ error: 'Invalid settings object' });
+  }
+  try {
+    const keys = Object.keys(settings);
+    for (const key of keys) {
+      await db.query(`
+        INSERT INTO settings (key, value)
+        VALUES ($1, $2)
+        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
+      `, [key, JSON.stringify(settings[key])]);
+    }
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('admin.updateSettings', err);
+    res.status(500).json({ error: 'Failed to update settings' });
+  }
+};
+
+exports.updateScriptLot = async (req, res) => {
+  const id = Number(req.params.id);
+  const { lot_size, max_lots, margin_per_lot, is_banned, ban_reason } = req.body;
+  
+  try {
+    const { rows } = await db.query(`
+      UPDATE scripts 
+      SET lot_size = COALESCE($1, lot_size),
+          max_lots = COALESCE($2, max_lots),
+          margin_per_lot = COALESCE($3, margin_per_lot),
+          is_banned = COALESCE($4, is_banned),
+          ban_reason = COALESCE($5, ban_reason)
+      WHERE id = $6
+      RETURNING id, name, lot_size, max_lots, margin_per_lot, is_banned, ban_reason
+    `, [lot_size, max_lots, margin_per_lot, is_banned, ban_reason, id]);
+    
+    if (!rows.length) return res.status(404).json({ error: 'Script not found' });
+    res.json({ script: rows[0] });
+  } catch (err) {
+    console.error('admin.updateScriptLot', err);
+    res.status(500).json({ error: 'Failed to update script' });
+  }
+};
+
+exports.getOpsRevenue = async (req, res) => {
+  try {
+    const [stats, dailyTrades] = await Promise.all([
+      db.query(`
+        SELECT 
+          (SELECT COALESCE(SUM(credit) - SUM(debit), 0) FROM ledger) AS net_pnl,
+          (SELECT COUNT(*) FROM trades WHERE status='EXECUTED') AS total_trades,
+          (SELECT COUNT(DISTINCT user_id) FROM positions WHERE buy_qty > 0 OR sell_qty > 0) AS active_users
+      `),
+      db.query(`
+        SELECT created_at::date as date, COUNT(*) as trade_count
+        FROM trades 
+        WHERE status='EXECUTED' 
+        GROUP BY created_at::date 
+        ORDER BY created_at::date DESC 
+        LIMIT 7
+      `)
+    ]);
+    
+    res.json({
+      stats: stats.rows[0],
+      dailyTrades: dailyTrades.rows
+    });
+  } catch (err) {
+    console.error('admin.getOpsRevenue', err);
+    res.status(500).json({ error: 'Failed to load ops stats' });
+  }
+};
+
+exports.getPositions = async (req, res) => {
+  try {
+    const { rows } = await db.query(`
+      SELECT p.id, p.buy_qty, p.sell_qty, p.avg_buy_price, p.avg_sell_price, p.updated_at,
+             u.username, u.full_name,
+             s.name as script, s.exchange, s.current_price
+      FROM positions p
+      JOIN users u ON u.id = p.user_id
+      JOIN scripts s ON s.id = p.script_id
+      WHERE p.buy_qty > 0 OR p.sell_qty > 0
+      ORDER BY p.updated_at DESC
+    `);
+    res.json({ positions: rows });
+  } catch (err) {
+    console.error('admin.getPositions', err);
+    res.status(500).json({ error: 'Failed to load positions' });
+  }
+};
+
+exports.getLedger = async (req, res) => {
+  try {
+    const { rows } = await db.query(`
+      SELECT l.id, l.description, l.debit, l.credit, l.balance, l.created_at,
+             u.username, u.full_name
+      FROM ledger l
+      JOIN users u ON u.id = l.user_id
+      ORDER BY l.created_at DESC
+      LIMIT 1000
+    `);
+    res.json({ ledger: rows });
+  } catch (err) {
+    console.error('admin.getLedger', err);
+    res.status(500).json({ error: 'Failed to load ledger' });
+  }
+};
+
+exports.getTradeLogs = async (req, res) => {
+  try {
+    const { rows } = await db.query(`
+      SELECT tl.id, tl.action, tl.old_values, tl.new_values, tl.created_at,
+             u.username as target_user, 
+             dbu.username as done_by_user,
+             s.name as script, t.trade_type
+      FROM trade_logs tl
+      LEFT JOIN users u ON u.id = tl.user_id
+      LEFT JOIN users dbu ON dbu.id = tl.done_by
+      LEFT JOIN trades t ON t.id = tl.trade_id
+      LEFT JOIN scripts s ON s.id = t.script_id
+      ORDER BY tl.created_at DESC
+      LIMIT 1000
+    `);
+    res.json({ logs: rows });
+  } catch (err) {
+    console.error('admin.getTradeLogs', err);
+    res.status(500).json({ error: 'Failed to load trade logs' });
   }
 };

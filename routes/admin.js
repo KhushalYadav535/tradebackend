@@ -20,4 +20,18 @@ router.get('/positions', ctrl.getPositions);
 router.get('/ledger', ctrl.getLedger);
 router.get('/trade-logs', ctrl.getTradeLogs);
 
+// Indices Master routes
+router.get('/indices', ctrl.listIndices);
+router.patch('/indices/:id', (req, res) => {
+  req.body.id = Number(req.params.id);
+  ctrl.updateIndices(req, res);
+});
+
+// Script Master routes
+router.get('/script-master', ctrl.listScriptMaster);
+router.patch('/script-master/:id', (req, res) => {
+  req.body.id = Number(req.params.id);
+  ctrl.updateScriptActive(req, res);
+});
+
 module.exports = router;

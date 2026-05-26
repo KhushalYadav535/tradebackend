@@ -342,3 +342,79 @@ exports.getTradeLogs = async (req, res) => {
     res.status(500).json({ error: 'Failed to load trade logs' });
   }
 };
+
+// Indices Master
+exports.listIndices = async (req, res) => {
+  try {
+    const { rows } = await db.query(`
+      SELECT id, name, display_name, is_active, created_at
+      FROM indices
+      ORDER BY created_at ASC
+    `);
+    res.json({ indices: rows });
+  } catch (err) {
+    console.error('admin.listIndices', err);
+    res.status(500).json({ error: 'Failed to load indices' });
+  }
+};
+
+exports.updateIndices = async (req, res) => {
+  const { id, is_active } = req.body;
+  
+  if (!id || typeof is_active !== 'boolean') {
+    return res.status(400).json({ error: 'id and is_active are required' });
+  }
+  
+  try {
+    const { rows } = await db.query(`
+      UPDATE indices
+      SET is_active = $1
+      WHERE id = $2
+      RETURNING id, name, display_name, is_active
+    `, [is_active, id]);
+    
+    if (!rows.length) return res.status(404).json({ error: 'Index not found' });
+    res.json({ index: rows[0] });
+  } catch (err) {
+    console.error('admin.updateIndices', err);
+    res.status(500).json({ error: 'Failed to update index' });
+  }
+};
+
+// Script Master
+exports.listScriptMaster = async (req, res) => {
+  try {
+    const { rows } = await db.query(`
+      SELECT id, name, exchange, is_active, is_banned, current_price, lot_size, created_at
+      FROM scripts
+      ORDER BY exchange, name ASC
+    `);
+    res.json({ scripts: rows });
+  } catch (err) {
+    console.error('admin.listScriptMaster', err);
+    res.status(500).json({ error: 'Failed to load scripts' });
+  }
+};
+
+exports.updateScriptActive = async (req, res) => {
+  const { id, is_active } = req.body;
+  
+  if (!id || typeof is_active !== 'boolean') {
+    return res.status(400).json({ error: 'id and is_active are required' });
+  }
+  
+  try {
+    const { rows } = await db.query(`
+      UPDATE scripts
+      SET is_active = $1
+      WHERE id = $2
+      RETURNING id, name, exchange, is_active, is_banned, current_price, lot_size
+    `, [is_active, id]);
+    
+    if (!rows.length) return res.status(404).json({ error: 'Script not found' });
+    res.json({ script: rows[0] });
+  } catch (err) {
+    console.error('admin.updateScriptActive', err);
+    res.status(500).json({ error: 'Failed to update script' });
+  }
+};

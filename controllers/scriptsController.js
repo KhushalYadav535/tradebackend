@@ -34,8 +34,13 @@ exports.list = async (req, res) => {
   try {
     const { rows } = await db.query(
       `SELECT id, name, expiry, exchange, lot_size, current_price, prev_close,
-              is_banned, ban_reason, max_lots, margin_per_lot
-       FROM scripts ORDER BY exchange, name`
+              is_banned, ban_reason, max_lots, margin_per_lot, is_active
+       FROM scripts 
+       WHERE is_active = true 
+       AND exchange IN (
+         SELECT name FROM indices WHERE is_active = true
+       )
+       ORDER BY exchange, name`
     );
 
     await priceService.getAll().catch(() => {});

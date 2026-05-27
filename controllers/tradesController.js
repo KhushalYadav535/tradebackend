@@ -1,4 +1,5 @@
 const db = require('../db');
+const securityService = require('../services/securityService');
 
 async function logRejection(client, userId, scriptId, type, qty, price, reason) {
   await client.query(
@@ -18,6 +19,8 @@ exports.place = async (req, res) => {
     price,
     order_type = 'MARKET',
     product_type = 'INTRADAY',
+    nonce,
+    timestamp
   } = req.body || {};
 
   if (!script_id || !trade_type || (!lots && !quantity)) {
@@ -28,9 +31,29 @@ exports.place = async (req, res) => {
     return res.status(400).json({ error: 'trade_type must be BUY or SELL' });
   }
 
+  if (!nonce || !timestamp) {
+    return res.status(400).json({ error: 'Security headers (nonce, timestamp) are missing' });
+  }
+  
+  // Check timestamp (prevent replay, within 60 seconds)
+  const age = Date.now() - timestamp;
+  if (age > 60000 || age < -60000) {
+    return res.status(400).json({ error: 'Request expired or invalid timestamp' });
+  }
+
   const client = await db.getClient();
   try {
     await client.query('BEGIN');
+
+    // Idempotency check
+    const idempotencyRes = await client.query(
+      'INSERT INTO idempotency_keys (key) VALUES ($1) ON CONFLICT (key) DO NOTHING RETURNING key',
+      [nonce]
+    );
+    if (idempotencyRes.rowCount === 0) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Duplicate request (replay attack detected)' });
+    }
 
     const scriptRes = await client.query('SELECT * FROM scripts WHERE id=$1', [script_id]);
     if (scriptRes.rows.length === 0) {
@@ -47,6 +70,16 @@ exports.place = async (req, res) => {
     const execPrice = Number(price) || Number(script.current_price);
     const totalValue = Number((execPrice * qty).toFixed(2));
     const marginRequired = Number(script.margin_per_lot) * numLots;
+
+    // 0. Price validation (prevent manipulation)
+    // Requested price must be within 5% of current market price
+    const priceDeviation = Math.abs(execPrice - Number(script.current_price)) / Number(script.current_price);
+    if (priceDeviation > 0.05) {
+      const reason = 'Price deviation too high (manipulation detected)';
+      await logRejection(client, userId, script.id, type, qty, execPrice, reason);
+      await client.query('COMMIT');
+      return res.status(400).json({ error: reason });
+    }
 
     // 1. Banned script
     if (script.is_banned) {
@@ -73,10 +106,34 @@ exports.place = async (req, res) => {
     }
 
     // 4. Insert trade EXECUTED
+    // First fetch last trade for hash chaining
+    const lastTradeRes = await client.query(
+      'SELECT current_hash FROM trades WHERE user_id=$1 ORDER BY created_at DESC LIMIT 1',
+      [userId]
+    );
+    const previousHash = lastTradeRes.rows.length > 0 ? lastTradeRes.rows[0].current_hash : '0000000000000000';
+    
+    // Create a mock trade object to generate hash
+    const mockTrade = {
+      user_id: userId,
+      trade_type: type,
+      script_id: script.id,
+      quantity: qty,
+      price: execPrice,
+      created_at: new Date() // approximate timestamp for hash
+    };
+    
+    const currentHash = securityService.generateTransactionHash(mockTrade, previousHash);
+    const signature = securityService.signOrder({
+      ...mockTrade,
+      currentHash,
+      nonce
+    });
+
     const tradeRes = await client.query(
-      `INSERT INTO trades (user_id, script_id, trade_type, quantity, price, total_value, order_type, product_type, status)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'EXECUTED') RETURNING id, created_at`,
-      [userId, script.id, type, qty, execPrice, totalValue, order_type, product_type]
+      `INSERT INTO trades (user_id, script_id, trade_type, quantity, price, total_value, order_type, product_type, status, previous_hash, current_hash, signature, nonce)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'EXECUTED',$9,$10,$11,$12) RETURNING id, created_at`,
+      [userId, script.id, type, qty, execPrice, totalValue, order_type, product_type, previousHash, currentHash, signature, nonce]
     );
     const tradeId = tradeRes.rows[0].id;
 

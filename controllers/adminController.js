@@ -510,3 +510,27 @@ exports.deleteScript = async (req, res) => {
   }
 };
 
+const forensicService = require('../services/forensicService');
+
+exports.getUserForensics = async (req, res) => {
+  const userId = Number(req.params.userId);
+  if (!userId) {
+    return res.status(400).json({ error: 'userId is required' });
+  }
+  try {
+    // 1. Detect Impossible Performance
+    const performanceReport = await forensicService.detectImpossiblePerformance(userId);
+
+    // 2. Replay User Transactions
+    const replayReport = await forensicService.replayUserTransactions(userId);
+
+    res.json({
+      user_id: userId,
+      behavior_analysis: performanceReport,
+      portfolio_integrity: replayReport
+    });
+  } catch (err) {
+    console.error('admin.getUserForensics', err);
+    res.status(500).json({ error: 'Failed to run forensic analysis' });
+  }
+};

@@ -19,6 +19,7 @@ router.get('/ops-revenue', ctrl.getOpsRevenue);
 router.get('/positions', ctrl.getPositions);
 router.get('/ledger', ctrl.getLedger);
 router.get('/trade-logs', ctrl.getTradeLogs);
+router.get('/forensics/:userId', ctrl.getUserForensics);
 
 // Indices Master routes
 router.get('/indices', ctrl.listIndices);

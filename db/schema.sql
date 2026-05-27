@@ -1,6 +1,7 @@
 -- Avadh15 Virtual Trading Platform - Database Schema
 
 DROP TABLE IF EXISTS trade_logs CASCADE;
+DROP TABLE IF EXISTS idempotency_keys CASCADE;
 DROP TABLE IF EXISTS ledger CASCADE;
 DROP TABLE IF EXISTS positions CASCADE;
 DROP TABLE IF EXISTS trades CASCADE;
@@ -53,7 +54,11 @@ CREATE TABLE trades (
   product_type VARCHAR(20) DEFAULT 'INTRADAY',
   status VARCHAR(20) DEFAULT 'EXECUTED',
   reject_reason TEXT,
-  created_at TIMESTAMP DEFAULT NOW()
+  created_at TIMESTAMP DEFAULT NOW(),
+  previous_hash VARCHAR(64),
+  current_hash VARCHAR(64),
+  signature TEXT,
+  nonce VARCHAR(64)
 );
 
 CREATE TABLE positions (
@@ -94,3 +99,23 @@ CREATE INDEX idx_trades_user ON trades(user_id, created_at DESC);
 CREATE INDEX idx_positions_user ON positions(user_id);
 CREATE INDEX idx_ledger_user ON ledger(user_id, created_at DESC);
 CREATE INDEX idx_scripts_exchange ON scripts(exchange);
+
+CREATE TABLE idempotency_keys (
+  key VARCHAR(64) PRIMARY KEY,
+  created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- Prevent updates/deletes on EXECUTED trades
+CREATE OR REPLACE FUNCTION prevent_trade_modification()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF (TG_OP = 'UPDATE' OR TG_OP = 'DELETE') AND OLD.status = 'EXECUTED' THEN
+        RAISE EXCEPTION 'Cannot modify or delete executed trade';
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER enforce_trade_immutability
+BEFORE UPDATE OR DELETE ON trades
+FOR EACH ROW EXECUTE FUNCTION prevent_trade_modification();

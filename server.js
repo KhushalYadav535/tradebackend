@@ -20,6 +20,12 @@ app.use(cors({
 app.use(express.json());
 
 app.get('/api/health', (req, res) => {
+  console.log('Health check requested at /api/health');
+  res.json({ status: 'ok', service: 'avadh15-backend', time: new Date().toISOString() });
+});
+
+app.get('/health', (req, res) => {
+  console.log('Health check requested at /health');
   res.json({ status: 'ok', service: 'avadh15-backend', time: new Date().toISOString() });
 });
 

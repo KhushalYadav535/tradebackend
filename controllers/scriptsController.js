@@ -1,6 +1,7 @@
-const db = require('../db');
-const priceService = require('../services/priceService');
-const nseService = require('../services/nseService');
+const db              = require('../db');
+const priceService    = require('../services/priceService');
+const nseService      = require('../services/nseService');
+const vedpragya       = require('../services/vedpragyaService');
 
 function jitter(price) {
   const p = Number(price);
@@ -45,26 +46,37 @@ exports.list = async (req, res) => {
 
     await priceService.getAll().catch(() => {});
 
-    const updated = [];
-    for (const s of rows) {
+    // ── Parallel LTP fetch for all scripts ───────────────────────────────────
+    // Fetch ALL Vedpragya + Yahoo LTPs concurrently (not sequentially).
+    // This reduces response time from N×300ms → ~300ms regardless of script count.
+    const updated = await Promise.all(rows.map(async (s) => {
       let ltp = null, source = null;
+      let prevYahoo, openYahoo, highYahoo, lowYahoo;
 
-      // 1) Prefer NSE option-chain underlying for index symbols
-      if (PREFER_NSE.has(s.name)) {
+      // 1) Vedpragya Streams — real-time LTP (primary source)
+      // Pass exchange so MCX symbols resolve to MCX instruments (not NSE)
+      const scriptExchange = (vedpragya.EXCHANGE_FOR_SEGMENT && vedpragya.EXCHANGE_FOR_SEGMENT[s.exchange]) || s.exchange || null;
+      try {
+        const vpLtp = await vedpragya.getLtp(s.name, scriptExchange);
+        if (vpLtp && vpLtp > 0) { ltp = vpLtp; source = 'vedpragya'; }
+      } catch { /* fall through */ }
+
+      // 2) Prefer NSE option-chain underlying for index symbols
+      if (ltp == null && PREFER_NSE.has(s.name)) {
         const u = await nseService.getUnderlying(s.name).catch(() => null);
         if (u && u > 0) { ltp = u; source = 'nse'; }
       }
 
-      // 2) Fall back to Yahoo
+      // 3) Fall back to Yahoo Finance
       if (ltp == null) {
         const q = await priceService.quoteFor(s.name);
         if (q && q.regularMarketPrice) {
           ltp = Number(q.regularMarketPrice);
           source = 'yahoo';
-          var prevYahoo = Number(q.regularMarketPreviousClose ?? ltp);
-          var openYahoo = Number(q.regularMarketOpen ?? ltp);
-          var highYahoo = Number(q.regularMarketDayHigh ?? ltp);
-          var lowYahoo = Number(q.regularMarketDayLow ?? ltp);
+          prevYahoo = Number(q.regularMarketPreviousClose ?? ltp);
+          openYahoo = Number(q.regularMarketOpen ?? ltp);
+          highYahoo = Number(q.regularMarketDayHigh ?? ltp);
+          lowYahoo  = Number(q.regularMarketDayLow  ?? ltp);
         }
       }
 
@@ -78,8 +90,9 @@ exports.list = async (req, res) => {
           prev = Number(s.prev_close) || ltp;
           open = st.open; high = st.high; low = st.low;
         }
+        // Fire-and-forget — don't block response on DB write
         if (Number(s.current_price) !== ltp) {
-          await db.query('UPDATE scripts SET current_price=$1 WHERE id=$2', [ltp, s.id]);
+          db.query('UPDATE scripts SET current_price=$1 WHERE id=$2', [ltp, s.id]).catch(() => {});
         }
         const sp = spread(ltp);
         bid = Number((ltp - sp).toFixed(4));
@@ -87,8 +100,9 @@ exports.list = async (req, res) => {
       } else {
         // 3) Synthetic fallback
         ltp = jitter(s.current_price);
+        // Fire-and-forget — don't block response on DB write
         if (ltp !== Number(s.current_price)) {
-          await db.query('UPDATE scripts SET current_price=$1 WHERE id=$2', [ltp, s.id]);
+          db.query('UPDATE scripts SET current_price=$1 WHERE id=$2', [ltp, s.id]).catch(() => {});
         }
         const st = ensureSession(s, ltp);
         prev = Number(s.prev_close) || ltp;
@@ -102,7 +116,7 @@ exports.list = async (req, res) => {
       const change = prev ? ((ltp - prev) / prev) * 100 : 0;
       const netChange = ltp - prev;
 
-      updated.push({
+      return {
         id: s.id, name: s.name, expiry: s.expiry, exchange: s.exchange,
         lot_size: s.lot_size, prev_close: prev,
         is_banned: s.is_banned, ban_reason: s.ban_reason,
@@ -111,8 +125,8 @@ exports.list = async (req, res) => {
         net_change: Number(netChange.toFixed(4)),
         change_pct: Number(change.toFixed(2)),
         source,
-      });
-    }
+      };
+    }));
 
     res.json({ scripts: updated });
   } catch (err) {
@@ -120,6 +134,7 @@ exports.list = async (req, res) => {
     res.status(500).json({ error: 'Failed to load scripts' });
   }
 };
+
 
 exports.banned = async (req, res) => {
   try {

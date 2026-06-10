@@ -9,6 +9,7 @@ router.post('/students', ctrl.createStudent);
 router.patch('/students/:id', ctrl.updateStudent);
 router.delete('/students/:id', ctrl.deleteStudent);
 router.get('/students/:id/trades', ctrl.studentTrades);
+router.post('/students/:id/credit', ctrl.creditStudent);
 
 router.get('/all-trades', ctrl.getAllTrades);
 router.get('/rejections', ctrl.getRejections);
@@ -20,6 +21,7 @@ router.get('/positions', ctrl.getPositions);
 router.get('/ledger', ctrl.getLedger);
 router.get('/trade-logs', ctrl.getTradeLogs);
 router.get('/forensics/:userId', ctrl.getUserForensics);
+router.get('/reports/weekly', ctrl.getWeeklyReport);
 
 // Indices Master routes
 router.get('/indices', ctrl.listIndices);

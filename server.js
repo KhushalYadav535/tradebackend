@@ -10,6 +10,7 @@ const ledgerRoutes = require('./routes/ledger');
 const usersRoutes = require('./routes/users');
 const adminRoutes = require('./routes/admin');
 const watchlistRoutes = require('./routes/watchlist');
+const marketRoutes    = require('./routes/market');
 
 const app = express();
 
@@ -29,6 +30,22 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', service: 'avadh15-backend', time: new Date().toISOString() });
 });
 
+// Public settings endpoint (no auth) — exposes only safe feature flags
+app.get('/api/settings/public', async (req, res) => {
+  try {
+    const db = require('./db');
+    const { rows } = await db.query(
+      `SELECT key, value FROM settings WHERE key IN ('maintenance_mode', 'allow_trading', 'market_open')`
+    );
+    const settings = {};
+    rows.forEach(r => { settings[r.key] = r.value; });
+    res.json({ settings });
+  } catch (err) {
+    console.error('settings.public', err);
+    res.json({ settings: {} }); // fail gracefully
+  }
+});
+
 app.use('/api/auth', authRoutes);
 app.use('/api/scripts', scriptsRoutes);
 app.use('/api/trades', tradesRoutes);
@@ -37,6 +54,7 @@ app.use('/api/ledger', ledgerRoutes);
 app.use('/api/users', usersRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/watchlist', watchlistRoutes);
+app.use('/api/market',   marketRoutes);
 
 app.use((req, res) => {
   res.status(404).json({ error: 'Not found' });

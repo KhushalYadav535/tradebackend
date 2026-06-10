@@ -24,6 +24,10 @@ CREATE TABLE users (
   exposure DECIMAL(15,2) DEFAULT 0.00,
   role VARCHAR(20) DEFAULT 'user',
   is_active BOOLEAN DEFAULT true,
+  brokerage_type VARCHAR(20) DEFAULT 'per_lot',
+  brokerage_value DECIMAL(15,4) DEFAULT 0,
+  auto_cut BOOLEAN DEFAULT false,
+  auto_cut_limit DECIMAL(15,2) DEFAULT NULL,
   created_at TIMESTAMP DEFAULT NOW()
 );
 

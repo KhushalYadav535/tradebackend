@@ -45,6 +45,14 @@ exports.place = async (req, res) => {
   try {
     await client.query('BEGIN');
 
+    // --- Maintenance mode check ---
+    const maintRes = await client.query(`SELECT value FROM settings WHERE key='maintenance_mode'`);
+    const maintenanceMode = maintRes.rows.length > 0 ? maintRes.rows[0].value : false;
+    if (maintenanceMode === true || maintenanceMode === 'true') {
+      await client.query('ROLLBACK');
+      return res.status(503).json({ error: 'Platform is under maintenance. Trading is temporarily suspended.' });
+    }
+
     // Idempotency check
     const idempotencyRes = await client.query(
       'INSERT INTO idempotency_keys (key) VALUES ($1) ON CONFLICT (key) DO NOTHING RETURNING key',
@@ -62,7 +70,7 @@ exports.place = async (req, res) => {
     }
     const script = scriptRes.rows[0];
 
-    const userRes = await client.query('SELECT id, balance, exposure FROM users WHERE id=$1 FOR UPDATE', [userId]);
+    const userRes = await client.query('SELECT id, balance, exposure, auto_cut, auto_cut_limit FROM users WHERE id=$1 FOR UPDATE', [userId]);
     const user = userRes.rows[0];
 
     const numLots = lots ? Number(lots) : Math.ceil(Number(quantity) / script.lot_size);
@@ -70,6 +78,23 @@ exports.place = async (req, res) => {
     const execPrice = Number(price) || Number(script.current_price);
     const totalValue = Number((execPrice * qty).toFixed(2));
     const marginRequired = Number(script.margin_per_lot) * numLots;
+
+    // --- Auto-cut limit check ---
+    if (user.auto_cut && user.auto_cut_limit) {
+      const usedRes = await client.query(
+        `SELECT COALESCE(SUM(total_value), 0)::numeric AS used
+         FROM trades
+         WHERE user_id=$1 AND status='EXECUTED' AND created_at::date = CURRENT_DATE`,
+        [userId]
+      );
+      const used = Number(usedRes.rows[0].used);
+      if (used + totalValue > Number(user.auto_cut_limit)) {
+        const reason = `Auto-cut limit reached. Daily limit: ₹${Number(user.auto_cut_limit).toLocaleString('en-IN')} | Already traded: ₹${used.toLocaleString('en-IN')}`;
+        await logRejection(client, userId, script.id, type, qty, execPrice, reason);
+        await client.query('COMMIT');
+        return res.status(400).json({ error: reason });
+      }
+    }
 
     // 0. Price validation (prevent manipulation)
     // Requested price must be within 5% of current market price

@@ -31,7 +31,8 @@ exports.stats = async (req, res) => {
 exports.listStudents = async (req, res) => {
   try {
     const { rows } = await db.query(
-      `SELECT u.id, u.username, u.full_name, u.balance, u.exposure, u.is_active, u.role, u.created_at,
+      `SELECT u.id, u.username, u.full_name, u.balance, u.exposure, u.is_active, u.role,
+              u.brokerage_type, u.brokerage_value, u.auto_cut, u.auto_cut_limit, u.created_at,
               (SELECT COUNT(*) FROM trades t WHERE t.user_id = u.id AND t.status='EXECUTED')::int AS trade_count
        FROM users u
        ORDER BY u.created_at DESC`
@@ -44,7 +45,7 @@ exports.listStudents = async (req, res) => {
 };
 
 exports.createStudent = async (req, res) => {
-  const { username, password, full_name, balance } = req.body || {};
+  const { username, password, full_name, balance, brokerage_type, brokerage_value, auto_cut, auto_cut_limit } = req.body || {};
   if (!username || !password) {
     return res.status(400).json({ error: 'username and password are required' });
   }
@@ -54,6 +55,10 @@ exports.createStudent = async (req, res) => {
   if (!/^[a-zA-Z0-9_.-]{3,50}$/.test(username)) {
     return res.status(400).json({ error: 'Username must be 3-50 chars, letters/digits/_.-' });
   }
+  const brokerageType = ['per_lot', 'per_crore'].includes(brokerage_type) ? brokerage_type : 'per_lot';
+  const brokerageVal = Number(brokerage_value) >= 0 ? Number(brokerage_value) : 0;
+  const autoCut = auto_cut === true || auto_cut === 'true';
+  const autoCutLimit = autoCut && Number(auto_cut_limit) > 0 ? Number(auto_cut_limit) : null;
   try {
     const exists = await db.query('SELECT 1 FROM users WHERE username = $1', [username]);
     if (exists.rows.length) {
@@ -62,10 +67,10 @@ exports.createStudent = async (req, res) => {
     const hash = await bcrypt.hash(password, 10);
     const initialBalance = Number(balance) > 0 ? Number(balance) : 500000;
     const { rows } = await db.query(
-      `INSERT INTO users (username, password_hash, full_name, role, balance)
-       VALUES ($1,$2,$3,'user',$4)
-       RETURNING id, username, full_name, balance, exposure, is_active, created_at`,
-      [username, hash, full_name || username, initialBalance]
+      `INSERT INTO users (username, password_hash, full_name, role, balance, brokerage_type, brokerage_value, auto_cut, auto_cut_limit)
+       VALUES ($1,$2,$3,'user',$4,$5,$6,$7,$8)
+       RETURNING id, username, full_name, balance, exposure, is_active, brokerage_type, brokerage_value, auto_cut, auto_cut_limit, created_at`,
+      [username, hash, full_name || username, initialBalance, brokerageType, brokerageVal, autoCut, autoCutLimit]
     );
     const student = rows[0];
     await db.query(
@@ -82,7 +87,7 @@ exports.createStudent = async (req, res) => {
 
 exports.updateStudent = async (req, res) => {
   const id = Number(req.params.id);
-  const { full_name, balance, is_active, password, role } = req.body || {};
+  const { full_name, balance, is_active, password, role, brokerage_type, brokerage_value, auto_cut, auto_cut_limit } = req.body || {};
   try {
     const cur = await db.query(`SELECT * FROM users WHERE id=$1`, [id]);
     if (!cur.rows.length) return res.status(404).json({ error: 'Student not found' });
@@ -102,11 +107,31 @@ exports.updateStudent = async (req, res) => {
       const hash = await bcrypt.hash(password, 10);
       sets.push(`password_hash=$${i++}`); vals.push(hash);
     }
+    if (brokerage_type !== undefined && ['per_lot', 'per_crore'].includes(brokerage_type)) {
+      sets.push(`brokerage_type=$${i++}`); vals.push(brokerage_type);
+    }
+    if (brokerage_value !== undefined && !Number.isNaN(Number(brokerage_value))) {
+      sets.push(`brokerage_value=$${i++}`); vals.push(Number(brokerage_value));
+    }
+    if (auto_cut !== undefined) {
+      const autoCutBool = auto_cut === true || auto_cut === 'true';
+      sets.push(`auto_cut=$${i++}`); vals.push(autoCutBool);
+      // Update auto_cut_limit together
+      if (autoCutBool && auto_cut_limit !== undefined && Number(auto_cut_limit) > 0) {
+        sets.push(`auto_cut_limit=$${i++}`); vals.push(Number(auto_cut_limit));
+      } else if (!autoCutBool) {
+        sets.push(`auto_cut_limit=$${i++}`); vals.push(null);
+      }
+    } else if (auto_cut_limit !== undefined && !Number.isNaN(Number(auto_cut_limit))) {
+      sets.push(`auto_cut_limit=$${i++}`); vals.push(Number(auto_cut_limit) > 0 ? Number(auto_cut_limit) : null);
+    }
+
     if (!sets.length) return res.status(400).json({ error: 'Nothing to update' });
 
     vals.push(id);
     const { rows } = await db.query(
-      `UPDATE users SET ${sets.join(', ')} WHERE id=$${i} RETURNING id, username, full_name, balance, exposure, is_active`,
+      `UPDATE users SET ${sets.join(', ')} WHERE id=$${i}
+       RETURNING id, username, full_name, balance, exposure, is_active, brokerage_type, brokerage_value, auto_cut, auto_cut_limit`,
       vals
     );
 
@@ -125,6 +150,31 @@ exports.updateStudent = async (req, res) => {
   } catch (err) {
     console.error('admin.updateStudent', err);
     res.status(500).json({ error: 'Failed to update student' });
+  }
+};
+
+exports.creditStudent = async (req, res) => {
+  const id = Number(req.params.id);
+  const { amount, description } = req.body || {};
+  if (!amount || Number(amount) <= 0) {
+    return res.status(400).json({ error: 'amount must be a positive number' });
+  }
+  try {
+    const cur = await db.query(`SELECT id, balance FROM users WHERE id=$1`, [id]);
+    if (!cur.rows.length) return res.status(404).json({ error: 'Student not found' });
+    const currentBalance = Number(cur.rows[0].balance);
+    const creditAmount = Number(amount);
+    const newBalance = currentBalance + creditAmount;
+    await db.query(`UPDATE users SET balance=$1 WHERE id=$2`, [newBalance, id]);
+    await db.query(
+      `INSERT INTO ledger (user_id, description, credit, balance)
+       VALUES ($1, $2, $3, $4)`,
+      [id, description || 'Admin credit', creditAmount, newBalance]
+    );
+    res.json({ ok: true, new_balance: newBalance, credited: creditAmount });
+  } catch (err) {
+    console.error('admin.creditStudent', err);
+    res.status(500).json({ error: 'Failed to credit student' });
   }
 };
 
@@ -532,5 +582,97 @@ exports.getUserForensics = async (req, res) => {
   } catch (err) {
     console.error('admin.getUserForensics', err);
     res.status(500).json({ error: 'Failed to run forensic analysis' });
+  }
+};
+
+exports.getWeeklyReport = async (req, res) => {
+  try {
+    const { user_id, week_start } = req.query;
+
+    // Determine week range (Mon–Sun)
+    let weekStart;
+    if (week_start) {
+      weekStart = new Date(week_start);
+    } else {
+      weekStart = new Date();
+      const day = weekStart.getDay(); // 0=Sun
+      const diff = day === 0 ? -6 : 1 - day;
+      weekStart.setDate(weekStart.getDate() + diff);
+    }
+    weekStart.setHours(0, 0, 0, 0);
+    const weekEnd = new Date(weekStart);
+    weekEnd.setDate(weekEnd.getDate() + 7);
+
+    const params = [weekStart.toISOString(), weekEnd.toISOString()];
+    let userFilter = '';
+    if (user_id) {
+      params.push(Number(user_id));
+      userFilter = `AND t.user_id = $${params.length}`;
+    }
+
+    const { rows } = await db.query(`
+      SELECT
+        u.id AS user_id,
+        u.username,
+        u.full_name,
+        t.created_at::date AS trade_date,
+        COUNT(*) FILTER (WHERE t.status='EXECUTED')::int AS total_trades,
+        COUNT(*) FILTER (WHERE t.status='EXECUTED' AND t.trade_type='BUY')::int AS buy_trades,
+        COUNT(*) FILTER (WHERE t.status='EXECUTED' AND t.trade_type='SELL')::int AS sell_trades,
+        COALESCE(SUM(t.total_value) FILTER (WHERE t.status='EXECUTED' AND t.trade_type='BUY'), 0)::numeric AS total_buy_value,
+        COALESCE(SUM(t.total_value) FILTER (WHERE t.status='EXECUTED' AND t.trade_type='SELL'), 0)::numeric AS total_sell_value,
+        COALESCE(SUM(t.total_value) FILTER (WHERE t.status='EXECUTED' AND t.trade_type='SELL'), 0)::numeric
+          - COALESCE(SUM(t.total_value) FILTER (WHERE t.status='EXECUTED' AND t.trade_type='BUY'), 0)::numeric AS net_pnl
+      FROM trades t
+      JOIN users u ON u.id = t.user_id
+      WHERE t.created_at >= $1 AND t.created_at < $2
+        ${userFilter}
+      GROUP BY u.id, u.username, u.full_name, t.created_at::date
+      ORDER BY u.username, t.created_at::date
+    `, params);
+
+    // Summarize per-user totals
+    const userMap = {};
+    for (const row of rows) {
+      if (!userMap[row.user_id]) {
+        userMap[row.user_id] = {
+          user_id: row.user_id,
+          username: row.username,
+          full_name: row.full_name,
+          total_trades: 0,
+          buy_trades: 0,
+          sell_trades: 0,
+          total_buy_value: 0,
+          total_sell_value: 0,
+          net_pnl: 0,
+          daily: []
+        };
+      }
+      const u = userMap[row.user_id];
+      u.total_trades += row.total_trades;
+      u.buy_trades += row.buy_trades;
+      u.sell_trades += row.sell_trades;
+      u.total_buy_value += Number(row.total_buy_value);
+      u.total_sell_value += Number(row.total_sell_value);
+      u.net_pnl += Number(row.net_pnl);
+      u.daily.push({
+        date: row.trade_date,
+        total_trades: row.total_trades,
+        buy_trades: row.buy_trades,
+        sell_trades: row.sell_trades,
+        total_buy_value: Number(row.total_buy_value),
+        total_sell_value: Number(row.total_sell_value),
+        net_pnl: Number(row.net_pnl)
+      });
+    }
+
+    res.json({
+      week_start: weekStart.toISOString().split('T')[0],
+      week_end: weekEnd.toISOString().split('T')[0],
+      users: Object.values(userMap)
+    });
+  } catch (err) {
+    console.error('admin.getWeeklyReport', err);
+    res.status(500).json({ error: 'Failed to generate weekly report' });
   }
 };

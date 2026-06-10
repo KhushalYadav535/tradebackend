@@ -136,6 +136,21 @@ exports.list = async (req, res) => {
 };
 
 
+exports.indices = async (req, res) => {
+  try {
+    const { rows } = await db.query(
+      `SELECT name as value, display_name as label, is_active 
+       FROM indices 
+       WHERE is_active = true 
+       ORDER BY created_at ASC`
+    );
+    res.json({ indices: rows });
+  } catch (err) {
+    console.error('scripts.indices', err);
+    res.status(500).json({ error: 'Failed to load indices' });
+  }
+};
+
 exports.banned = async (req, res) => {
   try {
     const { rows } = await db.query(

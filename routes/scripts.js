@@ -4,6 +4,7 @@ const ctrl = require('../controllers/scriptsController');
 
 router.use(auth);
 router.get('/', ctrl.list);
+router.get('/indices', ctrl.indices);
 router.get('/banned', ctrl.banned);
 router.get('/maxqty', ctrl.maxQty);
 router.get('/option-chain/:symbol', ctrl.optionChain);

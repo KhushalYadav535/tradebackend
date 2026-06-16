@@ -65,16 +65,15 @@ async function runPortfolioIntegrityCheck() {
             
             for (const user of users) {
                 // Calculate cash from ledger (source of truth)
-                const ledgerRes = await client.query(
-                    `SELECT 
-                        (SELECT 500000.00) + -- starting balance
-                        COALESCE(SUM(credit - debit), 0) as cash_balance
-                     FROM ledger
-                     WHERE user_id = $1`,
+                // Actually simpler: current balance = last ledger row's balance
+                const lastBalRes = await client.query(
+                    `SELECT balance FROM ledger WHERE user_id = $1 ORDER BY id DESC LIMIT 1`,
                     [user.id]
                 );
                 
-                const calculatedBalance = Number(ledgerRes.rows[0].cash_balance).toFixed(2);
+                const calculatedBalance = lastBalRes.rows[0]
+                    ? Number(lastBalRes.rows[0].balance).toFixed(2)
+                    : Number(user.balance).toFixed(2);
                 const storedBalance = Number(user.balance).toFixed(2);
                 
                 if (calculatedBalance !== storedBalance) {

@@ -55,6 +55,30 @@ async function apiFetch(path) {
   }
   return res.json();
 }
+
+function parseExpiryTime(exp) {
+  if (!exp) return 0;
+  // If it's already YYYY-MM-DD, parse directly
+  if (/^\d{4}-\d{2}-\d{2}/.test(exp)) {
+    return new Date(exp).getTime();
+  }
+  // Format: 26-05-2026 (DD-MM-YYYY)
+  if (exp.includes('-')) {
+    const parts = exp.split('-');
+    if (parts.length === 3) {
+      return new Date(`${parts[2]}-${parts[1]}-${parts[0]}T00:00:00Z`).getTime();
+    }
+  }
+  const match = exp.match(/^(\d{2})([A-Za-z]{3})(\d{4})$/);
+  if (match) {
+    const d = match[1];
+    const m = match[2];
+    const y = match[3];
+    return new Date(`${d} ${m} ${y} 00:00:00 GMT`).getTime();
+  }
+  return new Date(exp).getTime();
+}
+
 // ── symbol → UIR resolution cache ───────────────────────────────────────────
 
 /** @type {Map<string, { fetchedAt: number, uirId: number|null, ltp: number|null, name: string }>} */
@@ -80,22 +104,67 @@ function pickBest(results, exchangeHint, symbolQuery) {
 
   // 2. Filter to only live prices
   const live = filtered.filter(r => r.priceStatus === 'live');
-  const pool = live.length > 0 ? live : filtered;
+  let pool = live.length > 0 ? live : filtered;
 
-  // 3. Try to find an exact match on symbol or name within our pool
+  // 3. Sort pool to prioritize preferred exchanges & futures (front-month)
+  pool.sort((a, b) => {
+    // Prefer NSE over everything if no hint explicitly given
+    if (!exchangeHint) {
+      if (a.exchange === 'NSE' && b.exchange !== 'NSE') return -1;
+      if (b.exchange === 'NSE' && a.exchange !== 'NSE') return 1;
+    }
+    
+    // Prefer MCX over NCO/Others (especially for commodities)
+    if (a.exchange === 'MCX' && b.exchange !== 'MCX') return -1;
+    if (b.exchange === 'MCX' && a.exchange !== 'MCX') return 1;
+
+    // Within MCX, prefer Futures (derivatives)
+    if (a.exchange === 'MCX' && b.exchange === 'MCX') {
+       if (a.isDerivative && !b.isDerivative) return -1;
+       if (!a.isDerivative && b.isDerivative) return 1;
+
+       // Prefer earlier expiry (front month)
+       if (a.expiry && b.expiry) {
+           const ta = parseExpiryTime(a.expiry);
+           const tb = parseExpiryTime(b.expiry);
+           if (!isNaN(ta) && !isNaN(tb) && ta !== tb) return ta - tb;
+       }
+       
+       // Tie-breaker: prefer symbol names that explicitly include 'FUT'
+       const aFut = a.symbol?.toUpperCase().includes('FUT');
+       const bFut = b.symbol?.toUpperCase().includes('FUT');
+       if (aFut && !bFut) return -1;
+       if (!aFut && bFut) return 1;
+    }
+    return 0;
+  });
+
+  // 4. Try to find an exact match on symbol or name within our sorted pool
   if (symbolQuery) {
     const sq = symbolQuery.toUpperCase();
-    const exact = pool.find(r => r.symbol?.toUpperCase() === sq || r.name?.toUpperCase() === sq);
+    let exact = pool.find(r => r.symbol?.toUpperCase() === sq || r.name?.toUpperCase() === sq);
+    
+    // If no exact match, try matching base name and expiry (e.g. "NATURALGAS 25JUN2026")
+    if (!exact && sq.includes(' ')) {
+      const parts = sq.split(' ');
+      const baseName = parts[0];
+      const expiryStr = parts[1];
+      const targetTime = parseExpiryTime(expiryStr);
+      
+      if (!isNaN(targetTime)) {
+        exact = pool.find(r => {
+          if (r.name?.toUpperCase() !== baseName) return false;
+          if (!r.expiry) return false;
+          const rTime = parseExpiryTime(r.expiry);
+          return !isNaN(rTime) && Math.abs(rTime - targetTime) < 3 * 86400000; // 3 days tolerance
+        });
+      }
+    }
+    
     if (exact) return exact;
   }
 
-  // 4. Default to NSE if no exchange hint was provided
-  if (!exchangeHint) {
-    const nse = pool.find(r => r.exchange === 'NSE');
-    if (nse) return nse;
-  }
-
-  // 5. Fallback to the first result in the pool
+  // 5. Fallback to the first result in the sorted pool
   return pool[0];
 }
 
@@ -111,19 +180,20 @@ const SYMBOL_ALIASES = {
   FINNIFTY    : 'NIFTY FIN SERVICE',
   MIDCPNIFTY  : 'NIFTY MIDCAP SELECT',
   // MCX Commodities — use exact contract names Vedpragya recognises
-  GOLD        : 'GOLD',
-  GOLDM       : 'GOLDM',
-  SILVER      : 'SILVER',
-  SILVERM     : 'SILVERM',
-  CRUDEOIL    : 'CRUDEOIL',
-  CRUDEOILM   : 'CRUDEOILM',
-  NATURALGAS  : 'NATURALGAS',
-  COPPER      : 'COPPER',
-  ZINC        : 'ZINC',
-  LEAD        : 'LEAD',
-  ALUMINIUM   : 'ALUMINIUM',
-  NICKEL      : 'NICKEL',
-  MENTHAOIL   : 'MENTHAOIL',
+  // Appending ' FUT' ensures we match the active futures contract instead of stale spot/ETF records
+  GOLD        : 'GOLD FUT',
+  GOLDM       : 'GOLDM FUT',
+  SILVER      : 'SILVER FUT',
+  SILVERM     : 'SILVERM FUT',
+  CRUDEOIL    : 'CRUDEOIL FUT',
+  CRUDEOILM   : 'CRUDEOILM FUT',
+  NATURALGAS  : 'NATURALGAS FUT',
+  COPPER      : 'COPPER FUT',
+  ZINC        : 'ZINC FUT',
+  LEAD        : 'LEAD FUT',
+  ALUMINIUM   : 'ALUMINIUM FUT',
+  NICKEL      : 'NICKEL FUT',
+  MENTHAOIL   : 'MENTHAOIL FUT',
   // Forex / CDS
   USDINR      : 'USD-INR',
   EURINR      : 'EUR-INR',
@@ -142,11 +212,20 @@ const EXCHANGE_FOR_SEGMENT = {
   NSEEQT  : 'NSE',
 };
 
+const MCX_COMMODITIES = new Set([
+  'GOLD', 'GOLDM', 'SILVER', 'SILVERM', 'CRUDEOIL', 'CRUDEOILM', 'NATURALGAS',
+  'COPPER', 'ZINC', 'LEAD', 'ALUMINIUM', 'NICKEL', 'MENTHAOIL'
+]);
+
 /**
  * resolveUirId — returns { uirId, ltp, name } for a symbol.
  * Cached for CACHE_TTL_MS.
  */
 async function resolveUirId(symbol, exchange) {
+  if (!exchange && MCX_COMMODITIES.has(symbol.toUpperCase())) {
+    exchange = 'MCX';
+  }
+
   const cacheKey = `${symbol.toUpperCase()}:${(exchange || '').toUpperCase()}`;
   const entry = resolveCache.get(cacheKey);
   if (entry && Date.now() - entry.fetchedAt < CACHE_TTL_MS) return entry;
@@ -154,8 +233,15 @@ async function resolveUirId(symbol, exchange) {
   const query = SYMBOL_ALIASES[symbol.toUpperCase()] || symbol;
 
   try {
-    const json = await apiFetch(`/api/search?q=${encodeURIComponent(query)}`);
-    const results = json.data || json.results || [];
+    let json = await apiFetch(`/api/search?q=${encodeURIComponent(query)}`);
+    let results = json.data || json.results || [];
+
+    if (results.length === 0 && query.includes(' ')) {
+      const base = query.split(' ')[0];
+      const baseQuery = SYMBOL_ALIASES[base.toUpperCase()] || base;
+      json = await apiFetch(`/api/search?q=${encodeURIComponent(baseQuery)}`);
+      results = json.data || json.results || [];
+    }
 
     const best = pickBest(results, exchange, symbol);
 
@@ -167,6 +253,11 @@ async function resolveUirId(symbol, exchange) {
       exchange  : best?.exchange || null,
       lotSize   : best?.lotSize ?? null,
       tickSize  : best?.tickSize ?? null,
+      expiry    : best?.expiry || null,
+      strike    : best?.strike ?? null,
+      optionType: best?.optionType ?? null,
+      instrumentType: best?.instrumentType ?? null,
+      segment   : best?.segment ?? null,
     };
     resolveCache.set(cacheKey, resolved);
     return resolved;
@@ -187,6 +278,10 @@ async function resolveUirId(symbol, exchange) {
  * that would mean prices update only every 60s instead of every 5s.
  */
 async function getLtp(symbol, exchange) {
+  if (!exchange && MCX_COMMODITIES.has(symbol.toUpperCase())) {
+    exchange = 'MCX';
+  }
+
   const cacheKey = `ltp:${symbol.toUpperCase()}:${(exchange || '').toUpperCase()}`;
   const cached = ltpCache.get(cacheKey);
   if (cached && Date.now() - cached.fetchedAt < LTP_TTL_MS) return cached.ltp;
@@ -194,8 +289,14 @@ async function getLtp(symbol, exchange) {
   // Fresh search call — not going through resolveUirId's 60s cache
   const query = SYMBOL_ALIASES[symbol.toUpperCase()] || symbol;
   try {
-    const json = await apiFetch(`/api/search?q=${encodeURIComponent(query)}`);
-    const results = json.data || json.results || [];
+    let json = await apiFetch(`/api/search?q=${encodeURIComponent(query)}`);
+    let results = json.data || json.results || [];
+
+    if (results.length === 0 && query.includes(' ')) {
+      const base = query.split(' ')[0];
+      json = await apiFetch(`/api/search?q=${encodeURIComponent(base)}`);
+      results = json.data || json.results || [];
+    }
 
     const best = pickBest(results, exchange, symbol);
     const ltp = best?.last_price != null ? Number(best.last_price) : null;
@@ -357,6 +458,19 @@ class VedpragyaTickStream extends EventEmitter {
         volume    : frame.volume    ?? null,
         bid       : frame.bid       ?? null,
         ask       : frame.ask       ?? null,
+        vwap      : frame.vwap ?? frame.avg_price ?? frame.average_price ?? null,
+        oi        : frame.oi ?? frame.open_interest ?? null,
+        lower_circuit: frame.lower_circuit ?? frame.lc ?? null,
+        upper_circuit: frame.upper_circuit ?? frame.uc ?? null,
+        yearly_high  : frame.yearly_high ?? frame.high_52 ?? null,
+        yearly_low   : frame.yearly_low ?? frame.low_52 ?? null,
+        ohlc         : frame.ohlc ?? {
+          o: frame.open ?? null,
+          h: frame.high ?? null,
+          l: frame.low ?? null,
+          c: frame.close ?? null,
+        },
+        depth        : frame.depth ?? null,
       };
       this._latestTicks.set(uirId, tick);
       this.emit('tick', tick);
@@ -413,5 +527,4 @@ module.exports = {
   search,
   VedpragyaTickStream,
   getSharedStream,
-  EXCHANGE_FOR_SEGMENT,
 };

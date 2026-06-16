@@ -54,10 +54,9 @@ exports.list = async (req, res) => {
       let prevYahoo, openYahoo, highYahoo, lowYahoo;
 
       // 1) Vedpragya Streams — real-time LTP (primary source)
-      // Pass exchange so MCX symbols resolve to MCX instruments (not NSE)
-      const scriptExchange = (vedpragya.EXCHANGE_FOR_SEGMENT && vedpragya.EXCHANGE_FOR_SEGMENT[s.exchange]) || s.exchange || null;
+      // s.exchange is already "MCX" / "NSE" — correct format for Vedpragya
       try {
-        const vpLtp = await vedpragya.getLtp(s.name, scriptExchange);
+        const vpLtp = await vedpragya.getLtp(s.name, s.exchange || null);
         if (vpLtp && vpLtp > 0) { ltp = vpLtp; source = 'vedpragya'; }
       } catch { /* fall through */ }
 
@@ -67,8 +66,8 @@ exports.list = async (req, res) => {
         if (u && u > 0) { ltp = u; source = 'nse'; }
       }
 
-      // 3) Fall back to Yahoo Finance
-      if (ltp == null) {
+      // 3) Fall back to Yahoo Finance (only for NSE/Global indices, not MCX commodities)
+      if (ltp == null && s.exchange !== 'MCX' && s.exchange !== 'MCX-FUT') {
         const q = await priceService.quoteFor(s.name);
         if (q && q.regularMarketPrice) {
           ltp = Number(q.regularMarketPrice);

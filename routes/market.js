@@ -62,6 +62,11 @@ router.get('/ltp', async (req, res) => {
           name     : resolved.name,
           exchange : resolved.exchange,
           ltp      : resolved.ltp,
+          expiry   : resolved.expiry,
+          strike   : resolved.strike,
+          optionType: resolved.optionType,
+          instrumentType: resolved.instrumentType,
+          segment  : resolved.segment,
         };
       })
     );
@@ -99,6 +104,11 @@ router.get('/stream-info', async (req, res) => {
           lotSize  : r.lotSize,
           tickSize : r.tickSize,
           ltp      : r.ltp,
+          expiry   : r.expiry,
+          strike   : r.strike,
+          optionType: r.optionType,
+          instrumentType: r.instrumentType,
+          segment  : r.segment,
         };
       })
     );

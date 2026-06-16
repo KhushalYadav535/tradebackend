@@ -1,5 +1,6 @@
 const db = require('../db');
 const securityService = require('../services/securityService');
+const vedpragya = require('../services/vedpragyaService');
 
 async function logRejection(client, userId, scriptId, type, qty, price, reason) {
   await client.query(
@@ -97,13 +98,27 @@ exports.place = async (req, res) => {
     }
 
     // 0. Price validation (prevent manipulation)
-    // Requested price must be within 5% of current market price
-    const priceDeviation = Math.abs(execPrice - Number(script.current_price)) / Number(script.current_price);
-    if (priceDeviation > 0.05) {
-      const reason = 'Price deviation too high (manipulation detected)';
-      await logRejection(client, userId, script.id, type, qty, execPrice, reason);
-      await client.query('COMMIT');
-      return res.status(400).json({ error: reason });
+    // Use live Vedpragya price as the reference — NOT stale DB current_price.
+    // This prevents false rejections when VP stream sends live bid/ask prices
+    // that differ from the stale DB value by >5%.
+    let refPrice = Number(script.current_price);
+    try {
+      const vpLtp = await vedpragya.getLtp(script.name, script.exchange || null);
+      if (vpLtp && vpLtp > 0) {
+        refPrice = vpLtp;
+        // Update DB price silently (fire-and-forget)
+        db.query('UPDATE scripts SET current_price=$1 WHERE id=$2', [vpLtp, script.id]).catch(() => {});
+      }
+    } catch { /* fall through — use DB price */ }
+
+    if (refPrice > 0) {
+      const priceDeviation = Math.abs(execPrice - refPrice) / refPrice;
+      if (priceDeviation > 0.10) {  // 10% threshold — accounts for VP polling lag
+        const reason = `Price deviation too high (requested: ${execPrice}, market: ${refPrice.toFixed(2)})`;
+        await logRejection(client, userId, script.id, type, qty, execPrice, reason);
+        await client.query('COMMIT');
+        return res.status(400).json({ error: reason });
+      }
     }
 
     // 1. Banned script

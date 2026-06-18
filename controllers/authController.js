@@ -36,6 +36,26 @@ exports.login = async (req, res) => {
       { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
     );
 
+    // ── Capture real client IP ──────────────────────────────
+    const rawIp =
+      req.headers['x-forwarded-for']?.split(',')[0]?.trim() ||
+      req.headers['x-real-ip'] ||
+      req.socket?.remoteAddress ||
+      req.ip ||
+      'unknown';
+    // Strip IPv6 prefix ::ffff: if present (e.g. ::ffff:192.168.1.1 → 192.168.1.1)
+    let clientIp = rawIp.replace(/^::ffff:/, '');
+    if (clientIp === '::1') clientIp = '127.0.0.1'; // Make local IPv6 look like standard localhost
+    
+    const userAgent = req.headers['user-agent'] || '';
+
+    // Fire-and-forget — don't block response
+    db.query(
+      `INSERT INTO login_logs (user_id, ip_address, user_agent, action) VALUES ($1, $2, $3, 'login')`,
+      [user.id, clientIp, userAgent]
+    ).catch(e => console.warn('login_log insert failed:', e.message));
+    // ────────────────────────────────────────────────────────
+
     res.json({
       token,
       user: {
@@ -52,6 +72,7 @@ exports.login = async (req, res) => {
     res.status(500).json({ error: 'Login failed' });
   }
 };
+
 
 exports.logout = async (req, res) => {
   res.json({ ok: true });

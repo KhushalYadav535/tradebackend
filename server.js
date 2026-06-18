@@ -13,6 +13,7 @@ const watchlistRoutes = require('./routes/watchlist');
 const marketRoutes    = require('./routes/market');
 
 const app = express();
+app.set('trust proxy', true);
 
 const allowedOrigins = (process.env.CORS_ORIGIN || 'http://localhost:3000')
   .split(',')
